@@ -1,0 +1,13 @@
+.git
+.idea
+.env
+.env.*
+node_modules
+test
+docs
+*.md
+compose.yaml
+package-lock.json
+tsconfig.json
+.github
+smartworkout-tokens.env

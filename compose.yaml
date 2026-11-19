@@ -1,0 +1,21 @@
+# Enduo SmartWorkout Agent with Docker Compose. Copy .env.example to .env if you want to change anything, then:
+#
+#   docker compose up -d
+#   docker compose exec -it smartworkout enduo-smartworkout setup     # first run: SmartWorkout session + Enduo
+#
+# No port is published: the container only connects out. `docker compose build` builds the image from this checkout
+# instead of pulling it from Docker Hub.
+services:
+  smartworkout:
+    image: sklimaszewski/enduo-smartworkout-agent:${SMARTWORKOUT_AGENT_TAG:-latest}
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      # Both sign-ins and the sync state: keep it, and back it up like a password file.
+      - smartworkout-data:/data
+
+volumes:
+  smartworkout-data:

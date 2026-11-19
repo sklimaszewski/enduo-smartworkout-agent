@@ -1,0 +1,26 @@
+{
+  "name": "enduo-smartworkout-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Enduo SmartWorkout Agent: an unofficial agent for Enduo that sends finished SmartWorkout workouts to Enduo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sklimaszewski/enduo-smartworkout-agent.git"
+  },
+  "homepage": "https://github.com/sklimaszewski/enduo-smartworkout-agent#readme",
+  "bugs": "https://github.com/sklimaszewski/enduo-smartworkout-agent/issues",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/main.ts run",
+    "test": "node --test --test-reporter=spec 'test/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,13 @@
+version: 2
+
+updates:
+  # Actions are pinned to a commit; Dependabot moves the commit and the version in the comment behind it.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # The base image in the Dockerfile, pinned to a digest.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Enduo SmartWorkout Agent: the service and its setup. `enduo-smartworkout help` lists the commands.
+exec node /opt/enduo-smartworkout/src/main.ts "$@"

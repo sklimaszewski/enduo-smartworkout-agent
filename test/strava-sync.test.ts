@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 
 import { loadConfig } from '../src/config.ts';
 import type { Config } from '../src/config.ts';
@@ -11,7 +11,7 @@ import type { SwWorkout } from '../src/mapping.ts';
 import { runTargets } from '../src/runner.ts';
 import type { SwChange, SwSyncPage } from '../src/smartworkout.ts';
 import { Store } from '../src/store.ts';
-import { StravaActivityError, StravaAuthError, StravaError } from '../src/strava.ts';
+import { Strava, StravaActivityError, StravaAuthError, StravaError } from '../src/strava.ts';
 import type { StravaUpload } from '../src/strava.ts';
 import type { StravaActivity } from '../src/strava-mapping.ts';
 import { runStravaPass } from '../src/strava-sync.ts';
@@ -65,11 +65,11 @@ class Destination implements StravaActivities {
       this.loseResponse = false;
       throw new StravaError('Strava is not reachable.');
     }
-    return { id: `upload-${id}`, activityId: this.processing ? null : id, failed: false, duplicate: false };
+    return { id: `upload-${id}`, activityId: this.processing ? null : id, failed: false, duplicate: false, error: null };
   }
   async getUpload(id: string): Promise<StravaUpload> {
     this.polls.push(id);
-    return this.uploadResult ?? { id, activityId: this.processing ? null : id.replace('upload-', ''), failed: false, duplicate: false };
+    return this.uploadResult ?? { id, activityId: this.processing ? null : id.replace('upload-', ''), failed: false, duplicate: false, error: null };
   }
   async updateActivity(id: string): Promise<void> { this.updates.push(id); }
 }
@@ -91,6 +91,26 @@ describe('Strava sync', () => {
     logs = [];
   });
   afterEach(() => rmSync(config.stateDir, { recursive: true, force: true }));
+
+  it('sends no request to Strava in passes with nothing to do', async () => {
+    const strava = new Strava({ ...config, stravaClientSecret: 'SECRET' }, store);
+    store.saveStrava({ clientId: '123', accessToken: 'ACCESS', refreshToken: 'REFRESH', expiresAt: Date.now() + 3600000, athleteId: '42' });
+    const urls: string[] = [];
+    mock.method(globalThis, 'fetch', async (url: string) => {
+      urls.push(url);
+      return Response.json({ id: 42 });
+    });
+    try {
+      for (let minute = 0; minute < 60; minute++) {
+        await runStravaPass(config, store, source, strava, { log: (line) => logs.push(line) });
+      }
+    } finally {
+      mock.restoreAll();
+    }
+
+    assert.deepEqual(urls, []);
+    assert.equal(state().stravaAccount, '42');
+  });
 
   it('does absolutely nothing when disabled, even when credentials or services are missing', async () => {
     target.failure = new Error('must not be called');
@@ -202,7 +222,7 @@ describe('Strava sync', () => {
     source.add('new');
     target.processing = true;
     await pass();
-    target.uploadResult = { id: 'upload-1', activityId: null, failed: true, duplicate: true };
+    target.uploadResult = { id: 'upload-1', activityId: null, failed: true, duplicate: true, error: 'duplicate of activity 1' };
     target.existing.set(target.creates[0]!.marker, '1');
     assert.equal((await pass()).sent, 1);
     assert.equal(state().activities.new, '1');
@@ -222,10 +242,11 @@ describe('Strava sync', () => {
     source.add('new');
     target.processing = true;
     await pass();
-    target.uploadResult = { id: 'upload-1', activityId: null, failed: true, duplicate: false };
+    target.uploadResult = { id: 'upload-1', activityId: null, failed: true, duplicate: false, error: 'Invalid exercise_type' };
     assert.equal((await pass()).skipped, 1);
     assert.deepEqual(state().pending, {});
     assert.equal(state().cursor, 1);
+    assert.equal(logs.some((line) => line.includes('Strava could not process this workout file: Invalid exercise_type. It is tried again')), true);
   });
 
   for (const which of ['Strava', 'SmartWorkout']) {

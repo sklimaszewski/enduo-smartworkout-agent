@@ -4,7 +4,7 @@ import type { Config } from './config.ts';
 import { EnduoAuthError } from './enduo.ts';
 import { SmartWorkoutAuthError } from './smartworkout.ts';
 import type { Store } from './store.ts';
-import { StravaAuthError } from './strava.ts';
+import { StravaAuthError, StravaRateLimitError } from './strava.ts';
 import { runStravaPass } from './strava-sync.ts';
 import type { StravaActivities } from './strava-sync.ts';
 import { runPass, summary } from './sync.ts';
@@ -27,7 +27,12 @@ export async function runTargets(config: Config, store: Store, source: WorkoutSo
         options.log(`Strava ${options.dryRun ? 'dry run' : 'pass'} done: ${result.sent} ${options.dryRun ? 'to send' : 'sent'}, ${result.skipped} skipped, ${result.pending} processing, ${result.ignored} with nothing to send.`);
       }
     } catch (error) {
-      failed('Strava', error);
+      if (error instanceof StravaRateLimitError && !error.first) {
+        // Said once when the limit was hit; until it resets, a pass does not contact Strava.
+        success = false;
+      } else {
+        failed('Strava', error);
+      }
     }
   }
   try {

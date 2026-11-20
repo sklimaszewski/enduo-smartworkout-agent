@@ -174,7 +174,8 @@ export function toStravaActivity(workout: SwWorkout, catalogue: Catalogue, marke
     description: rows.join('\n'),
     file: {
       version: '1.0',
-      start_time: atom(workout.startedAt),
+      // The form of Strava's example: whole seconds in UTC with a Z.
+      start_time: new Date(Math.floor(workout.startedAt / 1000) * 1000).toISOString().replace('.000Z', 'Z'),
       utc_offset: Math.round((Date.parse(localStart(workout.startedAt, timezone).slice(0, 19) + 'Z') - Math.floor(workout.startedAt / 1000) * 1000) / 1000),
       elapsed_time: Math.round(workout.durationInMinutes * 60),
       creator: { name: 'Enduo SmartWorkout Agent' },

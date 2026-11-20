@@ -32,7 +32,7 @@ describe('Strava JSON strength mapping', () => {
     assert.equal(mapped.name, 'Strength A');
     assert.equal(mapped.sport_type, 'WeightTraining');
     assert.deepEqual(mapped.file, {
-      version: '1.0', start_time: '2026-11-19T12:30:00+00:00', utc_offset: 3600, elapsed_time: 3630,
+      version: '1.0', start_time: '2026-11-19T12:30:00Z', utc_offset: 3600, elapsed_time: 3630,
       creator: { name: 'Enduo SmartWorkout Agent' },
       sets: [
         { exercise_type: 'BARBELL_BENCH_PRESS', repetitions: 10, weight: 40 },

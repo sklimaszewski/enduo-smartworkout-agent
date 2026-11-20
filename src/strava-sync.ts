@@ -210,7 +210,7 @@ export async function runStravaPass(config: Config, store: Store, smartworkout: 
               throw new StravaActivityError('Strava reports duplicate data, but no activity with our source id was found; the existing activity was left unchanged');
             }
             if (upload.failed) {
-              throw new StravaActivityError('Strava could not process this workout file.');
+              throw new StravaActivityError(`Strava could not process this workout file: ${upload.error ?? 'no reason given'}`);
             }
           }
           if (activityId === undefined) {

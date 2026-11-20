@@ -139,7 +139,7 @@ async function setupStrava(config: Config, store: Store, force: boolean): Promis
   const strava = new Strava(config, store);
   if (store.strava()?.clientId === config.stravaClientId && !force) {
     try {
-      log(`Strava: signed in as athlete ${await strava.account()}.`);
+      log(`Strava: signed in as athlete ${await strava.account(true)}.`);
       return;
     } catch {
       log('Strava: the stored session does not work; signing in again.');
@@ -153,7 +153,7 @@ async function setupStrava(config: Config, store: Store, force: boolean): Promis
   console.log(`\nOpen this address in your browser and approve both activity permissions:\n\n${strava.authorizationUrl(state)}\n`);
   console.log('The final localhost page may not open. Copy its complete address from the browser and paste it here. No listening port is needed.');
   await strava.authorize(await askSecret('Strava redirect address (hidden): '), state);
-  log(`Strava: signed in as athlete ${await strava.account()}.`);
+  log(`Strava: signed in as athlete ${await strava.account(true)}.`);
 }
 
 function heartbeat(store: Store): void {
@@ -168,6 +168,8 @@ function heartbeat(store: Store): void {
 async function serve(config: Config, store: Store): Promise<void> {
   log(`Enduo SmartWorkout Agent ${config.version}: Enduo ${config.enduoUrl}, a pass every ${config.pollMs / 1000} s.`);
   let waitingSaid = false;
+  // One Strava client for the whole run: it remembers a rate limit and keeps away from Strava until it resets.
+  const strava = config.stravaEnabled ? new Strava(config, store) : null;
   while (!stopping) {
     heartbeat(store);
     const token = enduoToken(store);
@@ -181,7 +183,7 @@ async function serve(config: Config, store: Store): Promise<void> {
     }
     waitingSaid = false;
 
-    await runTargets(config, store, new SmartWorkout(config, store), new Enduo(config, token), config.stravaEnabled ? new Strava(config, store) : null, { log });
+    await runTargets(config, store, new SmartWorkout(config, store), new Enduo(config, token), strava, { log });
     await pause(config.pollMs);
   }
   log('Stopped.');
@@ -225,7 +227,7 @@ async function status(config: Config, store: Store): Promise<void> {
     console.log('Strava: disabled (STRAVA_ENABLED=false).');
   } else {
     try {
-      console.log(`Strava: enabled, athlete ${await new Strava(config, store).account()}, time zone ${config.stravaTimezone}.`);
+      console.log(`Strava: enabled, athlete ${await new Strava(config, store).account(true)}, time zone ${config.stravaTimezone}.`);
     } catch (error) {
       console.log(`Strava: ${(error as Error).message}`);
     }

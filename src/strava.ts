@@ -1,10 +1,13 @@
 // Official Strava API only. Tokens rotate and are persisted before any activity is sent. No token, response
 // body, callback address or workout data is included in an error: the service prints error messages to its log.
+// The one exception is the processing error of an upload: Strava's short, human-readable reason why it refused
+// our file, cleaned and bounded, so that a refusal can be diagnosed from the log.
 
 import type { Config } from './config.ts';
 import type { Store, StravaSession } from './store.ts';
 import type { StravaActivity } from './strava-mapping.ts';
 import { stravaExternalId } from './strava-mapping.ts';
+import { line } from './text.ts';
 
 const API = 'https://www.strava.com/api/v3';
 export const STRAVA_SCOPES = ['activity:read_all', 'activity:write'];
@@ -13,12 +16,38 @@ export class StravaError extends Error {}
 export class StravaAuthError extends StravaError {}
 /** A refusal of one activity, rather than a connection/authentication/rate-limit failure. */
 export class StravaActivityError extends StravaError {}
+/** Strava's rate limit is used up: nothing is sent to Strava until `until` (ms since the epoch). */
+export class StravaRateLimitError extends StravaError {
+  readonly until: number;
+  /** False when the limit was hit before and this pass did not contact Strava at all. */
+  readonly first: boolean;
+
+  constructor(until: number, daily: boolean, first: boolean) {
+    super(`Strava's ${daily ? 'daily' : '15-minute'} rate limit is used up; Strava is contacted again after ${new Date(until).toISOString()}.`);
+    this.until = until;
+    this.first = first;
+  }
+}
 
 export interface StravaUpload {
   id: string;
   activityId: string | null;
   failed: boolean;
   duplicate: boolean;
+  /** Strava's reason for a failed upload, as plain text; null while it processes or after success. */
+  error: string | null;
+}
+
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'", nbsp: ' ' };
+
+/** Strava's upload errors "may include escaped HTML": keep the words only. */
+export function uploadError(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const text = value.replace(/<[^>]*>/g, ' ').replace(/&(amp|lt|gt|quot|apos|#39|nbsp);/g, (_, name: string) => ENTITIES[name] ?? '').replace(/<[^>]*>/g, ' ');
+
+  return line(text, 300) ?? null;
 }
 
 const object = (value: unknown): Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -33,6 +62,32 @@ function idOf(value: unknown): string | null {
   return typeof record.id === 'number' && Number.isSafeInteger(record.id) && record.id > 0 ? String(record.id) : null;
 }
 
+const pair = (value: string | null): [number, number] | null => {
+  const numbers = (value ?? '').split(',').map((part) => Number(part.trim()));
+
+  return numbers.length === 2 && numbers.every((number) => Number.isFinite(number)) ? [numbers[0]!, numbers[1]!] : null;
+};
+
+/**
+ * When to contact Strava again after a 429. Its limits reset at every quarter hour (0, 15, 30, 45 min) and daily
+ * at midnight UTC; the overall and the read limit each give "15-minute,daily" in their headers.
+ */
+export function rateLimitReset(headers: Headers, now: number): { until: number; daily: boolean } {
+  const daily = [['X-RateLimit-Limit', 'X-RateLimit-Usage'], ['X-ReadRateLimit-Limit', 'X-ReadRateLimit-Usage']].some(([limit, usage]) => {
+    const limits = pair(headers.get(limit!));
+    const used = pair(headers.get(usage!));
+
+    return limits !== null && used !== null && used[1] >= limits[1];
+  });
+  const date = new Date(now);
+  const until = daily
+    ? Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1)
+    : Math.floor(now / 900_000) * 900_000 + 900_000;
+
+  // A few seconds of margin for clocks that differ.
+  return { until: until + 5_000, daily };
+}
+
 async function json(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -44,7 +99,7 @@ async function json(response: Response): Promise<unknown> {
 export class Strava {
   private readonly config: Config;
   private readonly store: Store;
-  private accountId: string | null = null;
+  private paused: { until: number; daily: boolean } | null = null;
 
   constructor(config: Config, store: Store) {
     this.config = config;
@@ -80,6 +135,7 @@ export class Strava {
 
   private async token(grant: Record<string, string>): Promise<StravaSession> {
     const client = this.client();
+    const previous = this.session();
     const response = await this.fetch('https://www.strava.com/oauth/token', {
       method: 'POST',
       body: new URLSearchParams({ ...client, ...grant }),
@@ -100,11 +156,11 @@ export class Strava {
       accessToken: answer.access_token,
       refreshToken: answer.refresh_token,
       expiresAt: answer.expires_at * 1000,
-      // A refresh may also be used to connect a different athlete: verify with /athlete below.
-      athleteId: idOf(answer.athlete),
+      // The athlete stays verified only when the session refreshes itself. A new authorization or a bootstrap
+      // token may belong to another athlete: account() verifies it with /athlete.
+      athleteId: previous !== null && grant.grant_type === 'refresh_token' && grant.refresh_token === previous.refreshToken ? previous.athleteId : null,
     };
     this.store.saveStrava(session);
-    this.accountId = null;
 
     return session;
   }
@@ -157,7 +213,7 @@ export class Strava {
       throw new StravaAuthError('Approve both activity:read_all and activity:write in Strava, then run setup again.');
     }
     await this.token({ grant_type: 'authorization_code', code });
-    await this.account();
+    await this.account(true);
   }
 
   /** Explicit setup may replace the stored athlete with a new ENV refresh token. */
@@ -166,10 +222,15 @@ export class Strava {
       await this.token({ grant_type: 'refresh_token', refresh_token: this.config.stravaRefreshToken });
     }
 
-    return this.account();
+    return this.account(true);
   }
 
   private async request(method: string, path: string, fields?: Record<string, string | number> | FormData): Promise<Response> {
+    // Every request counts against the limits of the Strava application, those that are refused as well.
+    if (this.paused !== null && Date.now() < this.paused.until) {
+      throw new StravaRateLimitError(this.paused.until, this.paused.daily, false);
+    }
+    this.paused = null;
     const send = async (token: string): Promise<Response> => this.fetch(`${API}${path}`, {
       method,
       headers: { Authorization: `Bearer ${token}` },
@@ -182,6 +243,10 @@ export class Strava {
         throw new StravaAuthError('Strava refused the token: run `enduo-smartworkout setup --strava`.');
       }
       response = await send((await this.token({ grant_type: 'refresh_token', refresh_token: refresh })).accessToken);
+    }
+    if (response.status === 429) {
+      this.paused = rateLimitReset(response.headers, Date.now());
+      throw new StravaRateLimitError(this.paused.until, this.paused.daily, true);
     }
     if (response.status === 401 || response.status === 403) {
       throw new StravaAuthError(`Strava refused access (${response.status}): approve activity:read_all and activity:write with \`enduo-smartworkout setup --strava\`.`);
@@ -196,9 +261,17 @@ export class Strava {
     return response;
   }
 
-  async account(): Promise<string> {
-    if (this.accountId !== null) {
-      return this.accountId;
+  /**
+   * The athlete of the stored session. It is asked from Strava only once per sign-in, or with `verify` (setup,
+   * status), never on every pass: a request a minute would use up Strava's daily read limit by itself.
+   */
+  async account(verify = false): Promise<string> {
+    const stored = this.session()?.athleteId ?? null;
+    if (stored !== null && !verify) {
+      // A token that expires is refreshed here, as a request to Strava would.
+      await this.accessToken();
+
+      return this.session()?.athleteId ?? this.account(true);
     }
     const id = idOf(await json(await this.request('GET', '/athlete')));
     if (id === null) {
@@ -208,7 +281,6 @@ export class Strava {
     if (session !== null) {
       this.store.saveStrava({ ...session, athleteId: id });
     }
-    this.accountId = id;
 
     return id;
   }
@@ -245,8 +317,15 @@ export class Strava {
       throw new StravaError('Strava sent an upload without a usable id; the next pass will look for its activity.');
     }
     const error = typeof answer.error === 'string' ? answer.error : '';
+    const failed = error.trim() !== '';
 
-    return { id, activityId: idOf({ id: answer.activity_id, id_str: answer.activity_id_str }), failed: error.trim() !== '', duplicate: /duplicate/i.test(error) };
+    return {
+      id,
+      activityId: idOf({ id: answer.activity_id, id_str: answer.activity_id_str }),
+      failed,
+      duplicate: /duplicate/i.test(error),
+      error: failed ? uploadError(error) ?? 'no reason given' : null,
+    };
   }
 
   async createUpload(activity: StravaActivity, marker: string): Promise<StravaUpload> {

@@ -185,7 +185,13 @@ apply to the exported activity.
 
 `once --dry-run` also prints the JSON file and metadata that would be sent, without contacting Strava or changing
 its session/sync files. `status` reports the Strava athlete, start boundary and pending uploads. Network errors,
-429 and 5xx are retried on the next pass; a refused workout is retried when its revision changes.
+429 and 5xx are retried on the next pass; a refused workout is retried when its revision changes. When Strava
+cannot process a file, the log gives Strava's own reason (as plain text, at most 300 characters).
+
+An idle pass makes no request to Strava: the athlete is verified once per sign-in (and by `setup`/`status`), not
+on every pass. Strava's rate limits belong to your Strava application and count refused requests too. After a
+429 the agent does not contact Strava until the limit resets: the next quarter hour, or midnight UTC when a daily
+limit is used up. It says so once in the log.
 If Strava rejects a file as duplicate data, the agent looks for its exact source id. It never adopts or edits
 an activity from another source merely because its time matches; an unrelated duplicate is skipped.
 

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { loadConfig } from '../src/config.ts';
 import type { Config } from '../src/config.ts';
 import { Store } from '../src/store.ts';
-import { Strava, StravaActivityError, StravaAuthError, StravaError } from '../src/strava.ts';
+import { rateLimitReset, Strava, StravaActivityError, StravaAuthError, StravaError, StravaRateLimitError } from '../src/strava.ts';
 import { stravaExternalId, stravaMarker } from '../src/strava-mapping.ts';
 import type { StravaActivity } from '../src/strava-mapping.ts';
 
@@ -89,7 +89,7 @@ describe('Strava API', () => {
       return Response.json({ id: 1234, id_str: '1234', activity_id: null, error: null }, { status: 201 });
     });
 
-    assert.deepEqual(await strava.createUpload(activity, marker), { id: '1234', activityId: null, failed: false, duplicate: false });
+    assert.deepEqual(await strava.createUpload(activity, marker), { id: '1234', activityId: null, failed: false, duplicate: false, error: null });
   });
 
   it('polls an upload without reuploading and keeps full string ids', async () => {
@@ -98,7 +98,7 @@ describe('Strava API', () => {
       return Response.json({ id: 1234, activity_id_str: '12345678987654321', activity_id: 1, error: null });
     });
 
-    assert.deepEqual(await strava.getUpload('1234'), { id: '1234', activityId: '12345678987654321', failed: false, duplicate: false });
+    assert.deepEqual(await strava.getUpload('1234'), { id: '1234', activityId: '12345678987654321', failed: false, duplicate: false, error: null });
   });
 
   it('reconciles uploads by exact external id and paginates the search', async () => {
@@ -142,7 +142,7 @@ describe('Strava API', () => {
       return Response.json({ id: 42 });
     });
 
-    assert.equal(await strava.account(), '42');
+    assert.equal(await strava.account(true), '42');
     assert.equal(attempts, 2);
   });
 
@@ -167,7 +167,7 @@ describe('Strava API', () => {
   });
 
   it('classifies failures and never echoes tokens, response bodies or transport errors', async () => {
-    for (const [status, type] of [[403, StravaAuthError], [429, StravaError], [503, StravaError], [422, StravaActivityError]] as const) {
+    for (const [status, type] of [[403, StravaAuthError], [503, StravaError], [422, StravaActivityError]] as const) {
       mock.method(globalThis, 'fetch', async () => new Response('PRIVATE_WORKOUT ACCESS CLIENT_SECRET', { status }));
       await assert.rejects(strava.updateActivity('1', activity), (error: unknown) => error instanceof type && !error.message.includes('PRIVATE') && !error.message.includes('CLIENT_SECRET'));
     }
@@ -175,5 +175,72 @@ describe('Strava API', () => {
     await assert.rejects(strava.getUpload('1'), (error: unknown) => error instanceof StravaError && !error.message.includes('PRIVATE'));
     mock.method(globalThis, 'fetch', async () => Response.json({ error: 'PRIVATE_WORKOUT', id: 1 }));
     assert.equal((await strava.getUpload('1')).failed, true);
+  });
+
+  it('knows its verified athlete without asking Strava on every pass, and asks when told to verify', async () => {
+    const urls: string[] = [];
+    mock.method(globalThis, 'fetch', async (url: string) => {
+      urls.push(url);
+      return Response.json({ id: 42 });
+    });
+
+    for (let pass = 0; pass < 5; pass++) {
+      assert.equal(await new Strava(config, store).account(), '42');
+    }
+    assert.deepEqual(urls, []);
+    assert.equal(await strava.account(true), '42');
+    assert.deepEqual(urls, ['https://www.strava.com/api/v3/athlete']);
+  });
+
+  it('keeps the athlete across its own refresh, but verifies a new authorization', async () => {
+    store.saveStrava({ ...store.strava()!, expiresAt: 0 });
+    const urls: string[] = [];
+    mock.method(globalThis, 'fetch', async (url: string) => {
+      urls.push(url);
+      return url.endsWith('/oauth/token')
+        ? Response.json({ access_token: 'NEW', refresh_token: 'ROTATED', expires_at: Math.floor(Date.now() / 1000) + 21600, athlete: { id: 7 } })
+        : Response.json({ id: 43 });
+    });
+
+    assert.equal(await strava.account(), '42');
+    assert.deepEqual(urls, ['https://www.strava.com/oauth/token']);
+
+    await strava.authorize(`${config.stravaRedirectUri}?state=STATE&code=CODE&scope=read,activity:read_all,activity:write`, 'STATE');
+    assert.equal(urls.at(-1), 'https://www.strava.com/api/v3/athlete');
+    assert.equal(store.strava()?.athleteId, '43');
+  });
+
+  it('stops contacting Strava after a 429 until its limit resets', async () => {
+    let calls = 0;
+    mock.method(globalThis, 'fetch', async () => {
+      calls++;
+      return new Response('', { status: 429, headers: { 'X-RateLimit-Limit': '200,2000', 'X-RateLimit-Usage': '12,300', 'X-ReadRateLimit-Limit': '100,1000', 'X-ReadRateLimit-Usage': '5,1000' } });
+    });
+
+    await assert.rejects(strava.getUpload('1'), (error: unknown) => error instanceof StravaRateLimitError && error.first && /daily/.test(error.message));
+    await assert.rejects(strava.getUpload('1'), (error: unknown) => error instanceof StravaRateLimitError && !error.first);
+    await assert.rejects(strava.findActivity(marker, Date.now()), StravaRateLimitError);
+    assert.equal(calls, 1);
+  });
+
+  it('waits for the next quarter hour or, when a daily limit is used up, for midnight UTC', () => {
+    const now = Date.parse('2026-11-20T16:47:10Z');
+    const headers = (usage: string, read: string) => new Headers({ 'X-RateLimit-Limit': '200,2000', 'X-RateLimit-Usage': usage, 'X-ReadRateLimit-Limit': '100,1000', 'X-ReadRateLimit-Usage': read });
+
+    assert.deepEqual(rateLimitReset(headers('200,900', '100,800'), now), { until: Date.parse('2026-11-20T17:00:05Z'), daily: false });
+    assert.deepEqual(rateLimitReset(headers('20,1100', '20,1000'), now), { until: Date.parse('2026-11-21T00:00:05Z'), daily: true });
+    assert.deepEqual(rateLimitReset(headers('20,2000', '20,900'), now), { until: Date.parse('2026-11-21T00:00:05Z'), daily: true });
+    assert.deepEqual(rateLimitReset(new Headers(), now), { until: Date.parse('2026-11-20T17:00:05Z'), daily: false });
+  });
+
+  it("gives Strava's reason for a failed upload as plain, bounded text", async () => {
+    mock.method(globalThis, 'fetch', async () => Response.json({ id: 1, error: 'Invalid&nbsp;<b>exercise_type</b>: &quot;FOO&quot;\n&lt;br&gt;line two', status: 'There was an error processing your activity.' }));
+    assert.deepEqual(await strava.getUpload('1'), { id: '1', activityId: null, failed: true, duplicate: false, error: 'Invalid exercise_type : "FOO" line two' });
+
+    mock.method(globalThis, 'fetch', async () => Response.json({ id: 1, error: `<p>${'x'.repeat(1000)}</p>` }));
+    assert.equal(Array.from((await strava.getUpload('1')).error ?? '').length, 300);
+
+    mock.method(globalThis, 'fetch', async () => Response.json({ id: 1, error: '<br>' }));
+    assert.equal((await strava.getUpload('1')).error, 'no reason given');
   });
 });

@@ -6,7 +6,7 @@
 import type { Config } from './config.ts';
 import type { Store, StravaSession } from './store.ts';
 import type { StravaActivity } from './strava-mapping.ts';
-import { stravaExternalId } from './strava-mapping.ts';
+import { isStravaExternalId, stravaExternalId, uploadAttempt } from './strava-mapping.ts';
 import { line } from './text.ts';
 
 const API = 'https://www.strava.com/api/v3';
@@ -285,7 +285,7 @@ export class Strava {
     return id;
   }
 
-  /** Reconcile a lost upload response using its stable external id, including private activities. */
+  /** Reconcile a lost upload response using the stable part of its external id, including private activities. */
   async findActivity(marker: string, startedAt: number): Promise<string | null> {
     const start = Math.floor(startedAt / 1000);
     for (let page = 1; ; page++) {
@@ -296,7 +296,7 @@ export class Strava {
       }
       for (const value of activities) {
         const activity = object(value);
-        if (activity.external_id === stravaExternalId(marker)) {
+        if (isStravaExternalId(activity.external_id, marker)) {
           const id = idOf(activity);
           if (id === null) {
             throw new StravaError('Strava sent an activity without a usable id.');
@@ -329,13 +329,13 @@ export class Strava {
   }
 
   async createUpload(activity: StravaActivity, marker: string): Promise<StravaUpload> {
+    const externalId = stravaExternalId(marker, uploadAttempt());
     const form = new FormData();
-    form.set('file', new Blob([JSON.stringify(activity.file)], { type: 'application/json' }), stravaExternalId(marker));
+    form.set('file', new Blob([JSON.stringify(activity.file)], { type: 'application/json' }), externalId);
     form.set('data_type', 'json');
     form.set('sport_type', activity.sport_type);
-    form.set('external_id', stravaExternalId(marker));
+    form.set('external_id', externalId);
     form.set('name', activity.name);
-    form.set('description', activity.description);
 
     return this.uploadAnswer(await json(await this.request('POST', '/uploads', form)));
   }
@@ -345,8 +345,8 @@ export class Strava {
   }
 
   async updateActivity(id: string, activity: StravaActivity): Promise<void> {
-    // The update endpoint cannot replace native sets, start or elapsed time. Their latest source values remain
-    // in the description; never delete/recreate an athlete's activity to change them.
-    await this.request('PUT', `/activities/${encodeURIComponent(id)}`, { name: activity.name, description: activity.description, sport_type: activity.sport_type });
+    // The update endpoint cannot replace native sets, start or elapsed time; never delete/recreate an athlete's
+    // activity to change them. The description is the athlete's: it is never sent.
+    await this.request('PUT', `/activities/${encodeURIComponent(id)}`, { name: activity.name, sport_type: activity.sport_type });
   }
 }

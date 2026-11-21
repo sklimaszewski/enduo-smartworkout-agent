@@ -8,12 +8,12 @@ import { loadConfig } from '../src/config.ts';
 import type { Config } from '../src/config.ts';
 import { Store } from '../src/store.ts';
 import { rateLimitReset, Strava, StravaActivityError, StravaAuthError, StravaError, StravaRateLimitError } from '../src/strava.ts';
-import { stravaExternalId, stravaMarker } from '../src/strava-mapping.ts';
+import { isStravaExternalId, stravaExternalId, stravaMarker } from '../src/strava-mapping.ts';
 import type { StravaActivity } from '../src/strava-mapping.ts';
 
 const marker = stravaMarker('sw-account', 'workout-1');
 const activity: StravaActivity = {
-  name: 'Strength', sport_type: 'WeightTraining', description: `${marker}\nMy notes`,
+  name: 'Strength', sport_type: 'WeightTraining',
   file: { version: '1.0', start_time: '2026-11-19T12:00:00Z', utc_offset: 3600, elapsed_time: 3600, creator: { name: 'Enduo SmartWorkout Agent' }, sets: [{ exercise_type: 'BARBELL_BENCH_PRESS', repetitions: 5, weight: 80 }] },
 };
 
@@ -70,7 +70,8 @@ describe('Strava API', () => {
     assert.equal(refreshes, 1);
   });
 
-  it('uploads a real JSON file with native sets, a stable external id and WeightTraining type', async () => {
+  it('uploads a real JSON file with native sets, an external id of its own and WeightTraining type', async () => {
+    const externalIds: string[] = [];
     mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
       assert.equal(url, 'https://www.strava.com/api/v3/uploads');
       assert.equal(init.method, 'POST');
@@ -80,16 +81,24 @@ describe('Strava API', () => {
       const form = init.body as FormData;
       assert.equal(form.get('data_type'), 'json');
       assert.equal(form.get('sport_type'), 'WeightTraining');
-      assert.equal(form.get('external_id'), stravaExternalId(marker));
-      assert.equal(form.get('description'), activity.description);
+      const externalId = form.get('external_id') as string;
+      assert.ok(isStravaExternalId(externalId, marker), externalId);
+      externalIds.push(externalId);
+      assert.equal(form.has('description'), false);
       const file = form.get('file') as File;
-      assert.equal(file.name, stravaExternalId(marker));
+      assert.equal(file.name, externalId);
       assert.equal(file.type, 'application/json');
       assert.deepEqual(JSON.parse(await file.text()), activity.file);
       return Response.json({ id: 1234, id_str: '1234', activity_id: null, error: null }, { status: 201 });
     });
 
     assert.deepEqual(await strava.createUpload(activity, marker), { id: '1234', activityId: null, failed: false, duplicate: false, error: null });
+    // Strava refuses an upload whose external id was used before (a regression: every retry of a once failed
+    // workout was refused with "Error Processing Data").
+    await strava.createUpload(activity, marker);
+    assert.equal(externalIds.length, 2);
+    assert.notEqual(externalIds[0], externalIds[1]);
+    assert.notEqual(externalIds[0], stravaExternalId(marker));
   });
 
   it('polls an upload without reuploading and keeps full string ids', async () => {
@@ -101,7 +110,7 @@ describe('Strava API', () => {
     assert.deepEqual(await strava.getUpload('1234'), { id: '1234', activityId: '12345678987654321', failed: false, duplicate: false, error: null });
   });
 
-  it('reconciles uploads by exact external id and paginates the search', async () => {
+  it('reconciles uploads by the source part of the external id and paginates the search', async () => {
     const pages: string[] = [];
     mock.method(globalThis, 'fetch', async (address: string) => {
       const url = new URL(address);
@@ -109,19 +118,28 @@ describe('Strava API', () => {
       assert.equal(url.pathname, '/api/v3/athlete/activities');
       assert.equal(url.searchParams.get('per_page'), '100');
       return url.searchParams.get('page') === '1'
-        ? Response.json(Array.from({ length: 100 }, (_, i) => ({ id: i + 1, external_id: 'unrelated.json' })))
-        : Response.json([{ id: 1234, external_id: stravaExternalId(marker), private: true }]);
+        ? Response.json(Array.from({ length: 100 }, (_, i) => ({ id: i + 1, external_id: i === 0 ? `${stravaExternalId(marker).slice(0, -5)}x.json` : 'unrelated.json' })))
+        : Response.json([{ id: 1234, external_id: stravaExternalId(marker, 'mi0abc12'), private: true }]);
     });
 
     assert.equal(await strava.findActivity(marker, Date.now()), '1234');
     assert.deepEqual(pages, ['1', '2']);
   });
 
+  it('recognizes the external ids of every upload of a workout, also those made before attempts', () => {
+    assert.ok(isStravaExternalId(stravaExternalId(marker), marker));
+    assert.ok(isStravaExternalId(stravaExternalId(marker, 'mi0abc12'), marker));
+    for (const other of [stravaExternalId(stravaMarker('sw-account', 'workout-2'), 'mi0abc12'), `${stravaExternalId(marker).slice(0, -5)}x.json`,
+      `${stravaExternalId(marker).slice(0, -5)}-a.json.gz`, `${stravaExternalId(marker).slice(0, -5)}-a-b.json`, null, 42]) {
+      assert.equal(isStravaExternalId(other, marker), false, String(other));
+    }
+  });
+
   it('updates metadata without trying to replace native sets or deleting the activity', async () => {
     mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
       assert.equal(url, 'https://www.strava.com/api/v3/activities/1234');
       assert.equal(init.method, 'PUT');
-      assert.deepEqual(Object.fromEntries(init.body as URLSearchParams), { name: activity.name, description: activity.description, sport_type: 'WeightTraining' });
+      assert.deepEqual(Object.fromEntries(init.body as URLSearchParams), { name: activity.name, sport_type: 'WeightTraining' });
       return Response.json({ id: 1234 });
     });
 

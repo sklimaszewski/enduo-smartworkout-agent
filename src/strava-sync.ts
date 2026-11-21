@@ -163,7 +163,7 @@ export async function runStravaPass(config: Config, store: Store, smartworkout: 
       const marker = stravaMarker(sourceAccount, id);
       let activity: StravaActivity | null;
       try {
-        activity = toStravaActivity(workout, catalogue, marker, config.stravaTimezone);
+        activity = toStravaActivity(workout, catalogue, config.stravaTimezone);
       } catch (error) {
         skip(id, revision, error instanceof StravaMappingError ? error.message : 'the workout cannot be mapped');
         continue;

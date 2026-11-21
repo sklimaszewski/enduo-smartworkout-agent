@@ -26,8 +26,8 @@ const workout = (overrides: Partial<SwWorkout> = {}): SwWorkout => ({
 const marker = stravaMarker('account-1', 'workout-1');
 
 describe('Strava JSON strength mapping', () => {
-  it('exports ordered native sets and keeps the remaining source data in the description', () => {
-    const mapped = toStravaActivity(workout(), catalogue, marker, 'Europe/Warsaw')!;
+  it('exports ordered native sets and no description', () => {
+    const mapped = toStravaActivity(workout(), catalogue, 'Europe/Warsaw')!;
 
     assert.equal(mapped.name, 'Strength A');
     assert.equal(mapped.sport_type, 'WeightTraining');
@@ -42,19 +42,17 @@ describe('Strava JSON strength mapping', () => {
         { exercise_type: 'TOTAL_BODY_GENERIC', repetitions: 12, weight: 0 },
       ],
     });
-    for (const text of [marker, 'Paused reps', 'Felt strong\nNext time: more weight', 'RPE 8.5', 'warmup', 'drop set', '"color":"red"', 'assistance 20 kg', 'body weight 85.5 kg', 'timer 120 s', 'My custom exercise']) {
-      assert.ok(mapped.description.includes(text), text);
-    }
+    // Neither the source id nor any detail of the workout goes into a description.
+    assert.equal('description' in mapped, false);
     assert.equal('streams' in mapped.file, false);
     assert.equal('active_time' in mapped.file, false);
   });
 
   it('maps by English catalogue names even when exercise names are displayed in Polish', () => {
     const translated = catalogueIn({ translations: { plank: { en: 'Side Plank', pl: 'Deska bokiem' } }, weightTypes: {} }, ['pl']);
-    const mapped = toStravaActivity(workout({ workoutExercises: [{ exerciseId: 'plank', units: ['TIME'], sets: [{ reps: 30000 }] }] }), translated, marker, 'UTC')!;
+    const mapped = toStravaActivity(workout({ workoutExercises: [{ exerciseId: 'plank', units: ['TIME'], sets: [{ reps: 30000 }] }] }), translated, 'UTC')!;
 
     assert.equal(mapped.file.sets[0]?.exercise_type, 'SIDE_PLANK');
-    assert.ok(mapped.description.includes('Deska bokiem'));
   });
 
   it('recognizes documented exercise types and common app names without guessing custom movements', () => {
@@ -64,17 +62,21 @@ describe('Strava JSON strength mapping', () => {
     assert.equal(stravaExercise('Bench Press (Barbell)'), 'BARBELL_BENCH_PRESS');
     assert.equal(stravaExercise('Bench Press', 'BARBELL'), 'BARBELL_BENCH_PRESS');
     assert.equal(stravaExercise('Dumbbell Curl'), 'STANDING_DUMBBELL_BICEPS_CURL');
+    assert.equal(stravaExercise('Wide Grip Lat Pulldown'), 'LAT_PULLDOWN');
+    assert.equal(stravaExercise('Dumbbell Bent Over Row'), 'BENT_OVER_DUMBBELL_ROW');
+    assert.equal(stravaExercise('Machine Reverse Flyes'), 'MACHINE_REAR_DELT_REVERSE_FLY');
+    assert.equal(stravaExercise('Dumbbell Bulgarian Squat'), 'DUMBBELL_BULGARIAN_SPLIT_SQUATS');
     assert.equal(stravaExercise('Something I invented'), 'TOTAL_BODY_GENERIC');
     assert.equal(stravaExercise(undefined), 'TOTAL_BODY_GENERIC');
   });
 
   it('preserves source values without Enduo caps and omits invalid or incomplete sets', () => {
-    const mapped = toStravaActivity(workout({ workoutExercises: [{ exerciseId: 'bench', sets: [{ reps: 0 }, { reps: 1200, weight: 700 }, { reps: NaN }] }] }), catalogue, marker, 'UTC')!;
+    const mapped = toStravaActivity(workout({ workoutExercises: [{ exerciseId: 'bench', sets: [{ reps: 0 }, { reps: 1200, weight: 700 }, { reps: NaN }] }] }), catalogue, 'UTC')!;
 
     assert.deepEqual(mapped.file.sets, [{ exercise_type: 'BARBELL_BENCH_PRESS', repetitions: 1200, weight: 700 }]);
-    assert.equal(toStravaActivity(workout({ workoutExercises: [] }), catalogue, marker, 'UTC'), null);
+    assert.equal(toStravaActivity(workout({ workoutExercises: [] }), catalogue, 'UTC'), null);
     for (const duration of [undefined, 0, -1, Infinity]) {
-      assert.throws(() => toStravaActivity(workout({ durationInMinutes: duration }), catalogue, marker, 'UTC'), StravaMappingError);
+      assert.throws(() => toStravaActivity(workout({ durationInMinutes: duration }), catalogue, 'UTC'), StravaMappingError);
     }
   });
 
@@ -82,15 +84,14 @@ describe('Strava JSON strength mapping', () => {
     assert.equal(localStart(Date.UTC(2026, 0, 15, 12), 'Europe/Warsaw'), '2026-01-15T13:00:00+01:00');
     assert.equal(localStart(Date.UTC(2026, 6, 15, 12), 'Europe/Warsaw'), '2026-07-15T14:00:00+02:00');
     assert.equal(localStart(Date.UTC(2026, 0, 15, 12), 'Asia/Kathmandu'), '2026-01-15T17:45:00+05:45');
-    assert.equal(toStravaActivity(workout({ startedAt: Date.UTC(2026, 6, 15, 12) }), catalogue, marker, 'Europe/Warsaw')?.file.utc_offset, 7200);
-    assert.equal(toStravaActivity(workout(), catalogue, marker, 'America/New_York')?.file.utc_offset, -18000);
+    assert.equal(toStravaActivity(workout({ startedAt: Date.UTC(2026, 6, 15, 12) }), catalogue, 'Europe/Warsaw')?.file.utc_offset, 7200);
+    assert.equal(toStravaActivity(workout(), catalogue, 'America/New_York')?.file.utc_offset, -18000);
   });
 
   it('cleans text and derives stable public identifiers without exposing source account ids', () => {
-    const mapped = toStravaActivity(workout({ name: ' Strength\u0000\nA ', notes: 'Note\u202e\u0007' }), catalogue, marker, 'UTC')!;
+    const mapped = toStravaActivity(workout({ name: ' Strength\u0000\nA ', notes: 'Note\u202e\u0007' }), catalogue, 'UTC')!;
 
     assert.equal(mapped.name, 'Strength A');
-    assert.equal(mapped.description.includes('\u202e'), false);
     assert.equal(marker.includes('account-1'), false);
     assert.equal(stravaMarker('account-1', 'workout-1'), marker);
     assert.notEqual(stravaMarker('account-2', 'workout-1'), marker);

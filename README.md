@@ -164,26 +164,28 @@ invented. A workout without a positive duration is skipped because Strava requir
 | Exercise | Native `exercise_type`, matched against Strava's documented catalogue using its English name, independent of `EXERCISE_LANGUAGE` |
 | Repetitions, weight in kg | Native `repetitions`, `weight` |
 | Timed set | Native `duration` in seconds (rounded from SmartWorkout's milliseconds) |
-| Workout/exercise names and notes, all completed sets | Activity name and detailed description |
-| RPE, warm-up/other set types, bands, assistance, body weight, timer | Description; assistance is never sent as a positive lifted weight |
+| Workout name | Activity name |
+| Assistance weight | Not sent: it is no lifted weight |
+| Notes, RPE, set types, bands, body weight, timer | Not sent: Strava has no field for them, and the activity gets no description |
 
-Names without a known match use Strava's `TOTAL_BODY_GENERIC`; their original names and full set details stay
-in the description. Names and notes are cleaned of invisible/control characters; individual notes and band data
-are bounded to 50,000 characters. Matching aliases and the supported identifiers live in
+Names without a known match use Strava's `TOTAL_BODY_GENERIC`. The activity name is cleaned of invisible/control
+characters. Matching aliases and the supported identifiers live in
 `src/strava-mapping.ts` and `src/strava-exercises.ts`.
 
 Strava processes uploads asynchronously. The upload id is saved immediately and checked on the next pass,
-without uploading the file again. A stable source `external_id` helps recover an activity when an upload
-response was lost. The token needs `activity:read_all` to find private activities as well. Enduo and Strava have
+without uploading the file again. Each upload's `external_id` is a stable source id plus an attempt of its own:
+Strava refuses at once ("Error Processing Data") any upload whose `external_id` was used before, even a valid
+file after a failed upload. The stable part helps recover an activity when an upload response was lost. The
+token needs `activity:read_all` to find private activities as well. Enduo and Strava have
 independent cursors and retries: a failure of either does not prevent a pass for the other.
 
-An edit of an exported workout updates that activity's **name and description**. Strava's documented update API
-cannot replace uploaded native sets, start time or duration; those native values stay as first uploaded, while
-the description includes the latest details. The agent never deletes/recreates activities to change them.
+An edit of an exported workout updates that activity's **name**. Strava's documented update API cannot replace
+uploaded native sets, start time or duration; those stay as first uploaded. The agent never deletes/recreates
+activities to change them, and never writes a description: one you add on Strava stays.
 Deleting a workout in SmartWorkout leaves its Strava activity in place. Strava's account visibility settings
 apply to the exported activity.
 
-`once --dry-run` also prints the JSON file and metadata that would be sent, without contacting Strava or changing
+`once --dry-run` also prints the JSON file and name that would be sent, without contacting Strava or changing
 its session/sync files. `status` reports the Strava athlete, start boundary and pending uploads. Network errors,
 429 and 5xx are retried on the next pass; a refused workout is retried when its revision changes. When Strava
 cannot process a file, the log gives Strava's own reason (as plain text, at most 300 characters).
@@ -192,7 +194,7 @@ An idle pass makes no request to Strava: the athlete is verified once per sign-i
 on every pass. Strava's rate limits belong to your Strava application and count refused requests too. After a
 429 the agent does not contact Strava until the limit resets: the next quarter hour, or midnight UTC when a daily
 limit is used up. It says so once in the log.
-If Strava rejects a file as duplicate data, the agent looks for its exact source id. It never adopts or edits
+If Strava rejects a file as duplicate data, the agent looks for its source id. It never adopts or edits
 an activity from another source merely because its time matches; an unrelated duplicate is skipped.
 
 ## Commands

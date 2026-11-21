@@ -1,16 +1,15 @@
-// SmartWorkout → Strava's JSON strength upload. Native sets hold supported fields; the description also keeps
-// the original exercise names, RPE, set types, assistance, bands, body weight, timers and notes.
+// SmartWorkout → Strava's JSON strength upload. Native sets hold what Strava supports (exercise, repetitions,
+// weight, duration); the activity gets no description: the athlete's own words on Strava are left alone.
 
 import { sha256 } from './identity.ts';
-import { atom, byOrder, exerciseName, MAX_TITLE } from './mapping.ts';
+import { byOrder, MAX_TITLE } from './mapping.ts';
 import type { Catalogue, SwWorkout } from './mapping.ts';
 import { STRAVA_EXERCISES } from './strava-exercises.ts';
-import { line, note } from './text.ts';
+import { line } from './text.ts';
 
 export interface StravaActivity {
   name: string;
   sport_type: 'WeightTraining';
-  description: string;
   file: {
     version: '1.0';
     start_time: string;
@@ -33,7 +32,25 @@ export class StravaMappingError extends Error {}
 /** Opaque, stable across revisions, and distinct for different SmartWorkout accounts. */
 export const stravaMarker = (account: string, workoutId: string): string => `SmartWorkout: ${sha256(JSON.stringify([account, workoutId]))}`;
 
-export const stravaExternalId = (marker: string): string => `smartworkout-${marker.slice('SmartWorkout: '.length)}.json`;
+const externalBase = (marker: string): string => `smartworkout-${marker.slice('SmartWorkout: '.length)}`;
+
+/**
+ * The external id of one upload. Strava refuses ("Error Processing Data", at once) every upload whose external id
+ * an earlier upload already used, even a valid file after a failed or deleted one; so each upload has an attempt
+ * of its own after the stable part. Without an attempt: the id of uploads made before this rule.
+ */
+export const stravaExternalId = (marker: string, attempt?: string): string =>
+  `${externalBase(marker)}${attempt === undefined ? '' : `-${attempt}`}.json`;
+
+/** An external id of any upload of this workout, including the earlier ones without an attempt. */
+export function isStravaExternalId(value: unknown, marker: string): boolean {
+  const base = externalBase(marker);
+
+  return typeof value === 'string' && (value === `${base}.json` || (value.startsWith(`${base}-`) && /^-[a-z0-9]{1,32}\.json$/.test(value.slice(base.length))));
+}
+
+/** Distinct for every upload of a workout, also within one millisecond. */
+export const uploadAttempt = (): string => `${Date.now().toString(36)}${crypto.randomUUID().slice(0, 4)}`;
 
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
@@ -67,6 +84,9 @@ const ALIASES: Record<string, string> = {
   BENT_OVER_BARBELL_ROW: 'BENT_OVER_BARBELL_ROW', BARBELL_ROW: 'BENT_OVER_BARBELL_ROW',
   TRICEPS_EXTENSION: 'TRICEPS_EXTENSION_GENERIC', SIT_UP: 'SIT_UP_GENERIC', SIT_UPS: 'SIT_UP_GENERIC',
   CRUNCHES: 'CRUNCH', ROMANIAN_DEADLIFT: 'ROMANIAN_DEADLIFTS', DUMBBELL_ROMANIAN_DEADLIFT: 'DUMBBELL_ROMANIAN_DEADLIFTS',
+  WIDE_GRIP_LAT_PULLDOWN: 'LAT_PULLDOWN', DUMBBELL_BENT_OVER_ROW: 'BENT_OVER_DUMBBELL_ROW',
+  MACHINE_REVERSE_FLY: 'MACHINE_REAR_DELT_REVERSE_FLY', MACHINE_REVERSE_FLYES: 'MACHINE_REAR_DELT_REVERSE_FLY',
+  DUMBBELL_BULGARIAN_SQUAT: 'DUMBBELL_BULGARIAN_SPLIT_SQUATS', DUMBBELL_BULGARIAN_SPLIT_SQUAT: 'DUMBBELL_BULGARIAN_SPLIT_SQUATS',
 };
 
 /** Do not guess at a custom exercise's movement. Its original name stays in the description. */
@@ -95,83 +115,38 @@ export function stravaExercise(name: string | undefined, weightType?: string): s
 }
 
 /** Null for an empty/aborted workout. A missing duration is refused rather than invented. */
-export function toStravaActivity(workout: SwWorkout, catalogue: Catalogue, marker: string, timezone: string): StravaActivity | null {
-  const rows = [marker, `Started: ${atom(workout.startedAt)}`];
-  const exercises: string[] = [];
-  const nativeSets: StravaSet[] = [];
-  let exerciseCount = 0;
-  let setCount = 0;
+export function toStravaActivity(workout: SwWorkout, catalogue: Catalogue, timezone: string): StravaActivity | null {
+  const sets: StravaSet[] = [];
   for (const exercise of byOrder(workout.workoutExercises ?? [])) {
     const units = Array.isArray(exercise.units) ? exercise.units : [];
-    const sets: string[] = [];
     const exerciseType = stravaExercise(catalogue.englishNames?.[exercise.exerciseId] ?? catalogue.names[exercise.exerciseId], catalogue.weightTypes[exercise.exerciseId]);
     for (const set of byOrder(exercise.sets ?? [])) {
       if (!finite(set.reps) || set.reps <= 0) {
         continue;
       }
-      const values = [units.includes('TIME') ? `${set.reps / 1000} s` : `${set.reps} reps`];
       const native: StravaSet = { exercise_type: exerciseType };
       if (units.includes('TIME')) {
         native.duration = Math.max(1, Math.round(set.reps / 1000));
       } else {
         native.repetitions = Math.max(1, Math.round(set.reps));
       }
-      if (finite(set.weight)) {
-        values.push(`${catalogue.weightTypes[exercise.exerciseId] === 'ASSISTED_WEIGHT' ? 'assistance ' : ''}${set.weight} kg`);
-        if (set.weight >= 0 && catalogue.weightTypes[exercise.exerciseId] !== 'ASSISTED_WEIGHT') {
-          native.weight = set.weight;
-        }
+      // An assisting weight is no load: Strava would read it as one.
+      if (finite(set.weight) && set.weight >= 0 && catalogue.weightTypes[exercise.exerciseId] !== 'ASSISTED_WEIGHT') {
+        native.weight = set.weight;
       }
-      if (finite(set.rpe) && set.rpe > 0) {
-        values.push(`RPE ${set.rpe}`);
-      }
-      const type = line(set.type, 100);
-      if (type) {
-        values.push(type.toLowerCase().replace(/_/g, ' '));
-      }
-      if (Array.isArray(set.bandWeights) && set.bandWeights.length > 0) {
-        values.push(`bands: ${line(JSON.stringify(set.bandWeights), 50_000)}`);
-      }
-      if (finite(set.bodyweight) && set.bodyweight > 0) {
-        values.push(`body weight ${set.bodyweight} kg`);
-      }
-      if (finite(set.timer) && set.timer > 0) {
-        values.push(`timer ${set.timer / 1000} s`);
-      }
-      sets.push(`  ${sets.length + 1}. ${values.join(' · ')}`);
-      nativeSets.push(native);
+      sets.push(native);
     }
-    if (sets.length === 0) {
-      continue;
-    }
-    exerciseCount++;
-    setCount += sets.length;
-    const kinds = [line(catalogue.weightTypes[exercise.exerciseId], 100), ...units.map((unit) => line(unit, 100))].filter(Boolean);
-    exercises.push(`\n${exerciseCount}. ${exerciseName(catalogue, exercise.exerciseId)}${kinds.length > 0 ? ` (${kinds.join(', ')})` : ''}`);
-    exercises.push(`Strava exercise: ${exerciseType}`);
-    const exerciseNote = note(exercise.notes, 50_000);
-    if (exerciseNote) {
-      exercises.push(exerciseNote);
-    }
-    exercises.push(...sets);
   }
-  if (setCount === 0) {
+  if (sets.length === 0) {
     return null;
   }
   if (!finite(workout.durationInMinutes) || !Number.isSafeInteger(Math.round(workout.durationInMinutes * 60)) || Math.round(workout.durationInMinutes * 60) < 1) {
     throw new StravaMappingError('the workout has no positive duration (required by Strava)');
   }
-  rows.push(`Duration: ${workout.durationInMinutes} min`, `${exerciseCount} exercises, ${setCount} sets`);
-  const workoutNote = note(workout.notes, 50_000);
-  if (workoutNote) {
-    rows.push('', workoutNote);
-  }
-  rows.push(...exercises);
 
   return {
     name: line(workout.name, MAX_TITLE) ?? 'SmartWorkout strength training',
     sport_type: 'WeightTraining',
-    description: rows.join('\n'),
     file: {
       version: '1.0',
       // The form of Strava's example: whole seconds in UTC with a Z.
@@ -179,7 +154,7 @@ export function toStravaActivity(workout: SwWorkout, catalogue: Catalogue, marke
       utc_offset: Math.round((Date.parse(localStart(workout.startedAt, timezone).slice(0, 19) + 'Z') - Math.floor(workout.startedAt / 1000) * 1000) / 1000),
       elapsed_time: Math.round(workout.durationInMinutes * 60),
       creator: { name: 'Enduo SmartWorkout Agent' },
-      sets: nativeSets,
+      sets,
     },
   };
 }

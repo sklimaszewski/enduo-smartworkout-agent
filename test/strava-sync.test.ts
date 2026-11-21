@@ -13,6 +13,7 @@ import type { SwChange, SwSyncPage } from '../src/smartworkout.ts';
 import { Store } from '../src/store.ts';
 import { Strava, StravaActivityError, StravaAuthError, StravaError } from '../src/strava.ts';
 import type { StravaUpload } from '../src/strava.ts';
+import { stravaMarker } from '../src/strava-mapping.ts';
 import type { StravaActivity } from '../src/strava-mapping.ts';
 import { runStravaPass } from '../src/strava-sync.ts';
 import type { StravaActivities } from '../src/strava-sync.ts';
@@ -120,7 +121,7 @@ describe('Strava sync', () => {
     assert.deepEqual(readdirSync(config.stateDir), []);
   });
 
-  it('pins the first-run boundary, excludes all history and later exports only new workouts', async () => {
+  it('pins the first-run boundary, excludes the history as it was and later exports new workouts', async () => {
     source.add('old', 1, { startedAt: Date.now() - 86400000 });
     assert.equal((await pass()).ignored, 1);
     assert.equal(target.creates.length, 0);
@@ -135,11 +136,72 @@ describe('Strava sync', () => {
     assert.equal((await pass()).sent, 0);
     assert.equal(target.creates.length, 1);
 
-    // Even an edit of a historical workout does not backfill it.
-    source.add('old', 2, { startedAt: Date.now() + 1000 });
+    assert.equal(logs.some((line) => /PRIVATE_WORKOUT|PRIVATE_NOTE/.test(line)), false);
+  });
+
+  it('sends an edit of a workout from before the boundary, and then keeps its activity up to date', async () => {
+    const old = Date.now() - 5 * 86400000;
+    source.add('old', 1, { startedAt: old });
+    assert.equal((await pass()).ignored, 1);
+    assert.equal(target.creates.length, 0);
+
+    // A regression: an edit of an older workout was never sent.
+    source.add('old', 2, { startedAt: old, name: 'Edited' });
+    assert.equal((await pass()).sent, 1);
+    assert.equal(target.creates.length, 1);
+    assert.equal(target.creates[0]?.activity.name, 'Edited');
+    assert.equal(state().activities.old, '1');
+
+    source.add('old', 3, { startedAt: old, name: 'Edited again' });
+    assert.equal((await pass()).sent, 1);
+    assert.equal(target.creates.length, 1);
+    assert.deepEqual(target.updates, ['1', '1']);
+  });
+
+  it('adopts the activity of an edited older workout that is already on Strava instead of uploading it again', async () => {
+    const old = Date.now() - 5 * 86400000;
+    source.add('old', 1, { startedAt: old });
+    await pass();
+    source.add('old', 2, { startedAt: old });
+    target.existing.set(stravaMarker('sw-1', 'old'), '77');
+
+    assert.equal((await pass()).sent, 1);
+    assert.equal(target.creates.length, 0);
+    assert.deepEqual(target.updates, ['77']);
+    assert.equal(state().activities.old, '77');
+  });
+
+  it('sends a workout added after the history was read even when it is dated before the boundary', async () => {
+    await pass();
+    source.add('backdated', 1, { startedAt: Date.now() - 3 * 86400000 });
+
+    assert.equal((await pass()).sent, 1);
+    assert.equal(target.creates.length, 1);
+  });
+
+  it('reads the history again, without sending it, when SmartWorkout asks for a full snapshot', async () => {
+    const old = Date.now() - 5 * 86400000;
+    source.add('new');
     await pass();
     assert.equal(target.creates.length, 1);
-    assert.equal(logs.some((line) => /PRIVATE_WORKOUT|PRIVATE_NOTE/.test(line)), false);
+    // A new snapshot gives an old workout a revision we have not seen: it is no edit of the athlete.
+    source.add('old', 7, { startedAt: old });
+    source.resync = true;
+    assert.equal((await pass()).ignored, 1);
+    assert.equal(target.creates.length, 1);
+    assert.equal(state().historyRead, true);
+  });
+
+  it('treats a state saved before the history flag as read once a pass has finished', async () => {
+    const old = Date.now() - 5 * 86400000;
+    source.add('old', 1, { startedAt: old });
+    await pass();
+    const saved = state();
+    delete saved.historyRead;
+    store.write('strava-sync.json', saved);
+    source.add('old', 2, { startedAt: old });
+
+    assert.equal((await pass()).sent, 1);
   });
 
   it('keeps the enable boundary even if Strava is initially unavailable', async () => {

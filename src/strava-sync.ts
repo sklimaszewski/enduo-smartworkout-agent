@@ -1,6 +1,8 @@
 // Strava has its own cursor, revisions and account binding. A failed Strava pass never holds back Enduo, and a
 // failed Enduo pass never holds back Strava. The first pass pins the start boundary before contacting Strava:
-// enabling the integration sends future workouts only, even if signing in to Strava initially fails.
+// enabling the integration does not send the history as it is, even if signing in to Strava initially fails.
+// Once that history has been read, every change is sent, whatever its date: an edit of an older workout updates
+// its activity or creates it, and so does a workout added with an earlier date.
 
 import type { Config } from './config.ts';
 import { catalogueIn, problemWith, unknownExercises } from './mapping.ts';
@@ -33,8 +35,10 @@ interface StravaSyncState {
   serverEpoch: string | null;
   /** Last revision handled, including empty, old, unreadable and refused workouts. */
   revisions: Record<string, number>;
-  /** Workouts observed before the boundary stay excluded even if an edit changes their start time. */
+  /** Workouts of the history as it was when Strava was enabled, left out until they change. */
   historical: Record<string, true>;
+  /** True once the history as it was has been read: a change after that is sent, whatever its date. */
+  historyRead: boolean;
   /** Id of each exported activity; retained even if a newer revision is refused. */
   activities: Record<string, string>;
   /** Start used for a create that may have reached Strava without a response reaching us. */
@@ -47,7 +51,7 @@ export interface StravaPassResult extends PassResult {
 }
 
 function emptyState(smartworkoutAccount: string, sinceMs: number): StravaSyncState {
-  return { smartworkoutAccount, stravaAccount: null, clientInstanceId: crypto.randomUUID(), sinceMs, cursor: 0, serverEpoch: null, revisions: {}, historical: {}, activities: {}, pending: {}, lastSyncAt: null };
+  return { smartworkoutAccount, stravaAccount: null, clientInstanceId: crypto.randomUUID(), sinceMs, cursor: 0, serverEpoch: null, revisions: {}, historical: {}, historyRead: false, activities: {}, pending: {}, lastSyncAt: null };
 }
 
 function readState(store: Store): StravaSyncState | null {
@@ -56,6 +60,10 @@ function readState(store: Store): StravaSyncState | null {
     typeof state.sinceMs !== 'number' || !Number.isFinite(state.sinceMs) || typeof state.clientInstanceId !== 'string' ||
     !Number.isFinite(state.cursor) || !state.revisions || !state.historical || !state.activities || !state.pending) {
     return null;
+  }
+  // A state saved before this flag: a pass that finished has read the history.
+  if (typeof state.historyRead !== 'boolean') {
+    state.historyRead = state.lastSyncAt !== null;
   }
 
   return state;
@@ -128,6 +136,8 @@ export async function runStravaPass(config: Config, store: Store, smartworkout: 
       restarted = true;
       state.cursor = 0;
       state.serverEpoch = page.requiresFullSnapshot ? null : page.serverEpoch;
+      // Revisions of a new snapshot may not compare with ours: read it as history, never send it all as edits.
+      state.historyRead = false;
       save();
       continue;
     }
@@ -151,7 +161,8 @@ export async function runStravaPass(config: Config, store: Store, smartworkout: 
         continue;
       }
       const workout = change.workout as SwWorkout;
-      if (state.historical[id] === true || (workout.startedAt < state.sinceMs && state.activities[id] === undefined && state.pending[id] === undefined)) {
+      // A new revision of a workout that was historical is an edit made after Strava was enabled: it is sent.
+      if (!state.historyRead && workout.startedAt < state.sinceMs && state.activities[id] === undefined && state.pending[id] === undefined) {
         state.historical[id] = true;
         state.revisions[id] = revision;
         result.ignored++;
@@ -247,6 +258,7 @@ export async function runStravaPass(config: Config, store: Store, smartworkout: 
     more = page.hasMore && page.changes.length > 0;
     save();
   }
+  state.historyRead = true;
   state.lastSyncAt = new Date().toISOString();
   save();
 

@@ -148,11 +148,14 @@ with both scopes. Tokens refresh automatically; the latest rotated refresh token
 takes precedence over ENV. Remove the bootstrap token from `.env` after connecting. To connect another Strava
 account, run `setup --strava` again (remove the old `STRAVA_REFRESH_TOKEN` first, if present).
 
-**Only new workouts.** The first enabled service pass saves a start boundary before contacting Strava. Workouts
-that **started before that boundary** are never exported, including later edits of those workouts; `BACKFILL_DAYS`
-applies to Enduo only. Keep `strava-sync.json` to preserve this boundary, activity ids and pending uploads. A
-change of the SmartWorkout or Strava account archives that file and starts a new boundary for the new accounts.
-Deleting it starts a new boundary too; it does not backfill history.
+**New workouts and edits.** The first enabled service pass saves a start boundary before contacting Strava. The
+history as it is then (workouts that **started before that boundary**) is not exported; `BACKFILL_DAYS` applies to
+Enduo only. Every change after that is: editing an older workout in SmartWorkout updates its Strava activity, or
+uploads it when Strava has none, and a workout added later with an earlier date is uploaded too. When SmartWorkout
+asks for a full resync, its history is read again the same way, so it is not uploaded all at once. Keep
+`strava-sync.json` to preserve this boundary, activity ids and pending uploads. A change of the SmartWorkout or
+Strava account archives that file and starts a new boundary for the new accounts. Deleting it starts a new
+boundary too; it does not backfill history.
 
 The agent uses [Strava's JSON strength upload format](https://developers.strava.com/docs/uploads/), with
 `sport_type=WeightTraining`. It sends the actual start timestamp, local UTC offset at that date, duration and

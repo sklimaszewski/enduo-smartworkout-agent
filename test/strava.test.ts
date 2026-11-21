@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { loadConfig } from '../src/config.ts';
 import type { Config } from '../src/config.ts';
 import { Store } from '../src/store.ts';
-import { rateLimitReset, Strava, StravaActivityError, StravaAuthError, StravaError, StravaRateLimitError } from '../src/strava.ts';
+import { rateLimitReset, Strava, StravaActivityError, StravaActivityGoneError, StravaAuthError, StravaError, StravaRateLimitError } from '../src/strava.ts';
 import { isStravaExternalId, stravaExternalId, stravaMarker } from '../src/strava-mapping.ts';
 import type { StravaActivity } from '../src/strava-mapping.ts';
 
@@ -185,7 +185,7 @@ describe('Strava API', () => {
   });
 
   it('classifies failures and never echoes tokens, response bodies or transport errors', async () => {
-    for (const [status, type] of [[403, StravaAuthError], [503, StravaError], [422, StravaActivityError]] as const) {
+    for (const [status, type] of [[403, StravaAuthError], [503, StravaError], [422, StravaActivityError], [404, StravaActivityGoneError]] as const) {
       mock.method(globalThis, 'fetch', async () => new Response('PRIVATE_WORKOUT ACCESS CLIENT_SECRET', { status }));
       await assert.rejects(strava.updateActivity('1', activity), (error: unknown) => error instanceof type && !error.message.includes('PRIVATE') && !error.message.includes('CLIENT_SECRET'));
     }

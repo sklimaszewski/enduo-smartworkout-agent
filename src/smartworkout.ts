@@ -40,6 +40,16 @@ interface TokenAnswer {
   refreshToken?: string;
 }
 
+/** One exercise of the catalogue as it is now: what the Strava table is checked against. */
+export interface SwCatalogueExercise {
+  id: string;
+  /** English name, else the first one the exercise has. */
+  name: string | null;
+  weightType: string | null;
+  /** False for an exercise an athlete added for themselves. */
+  isPublic: boolean;
+}
+
 export class SmartWorkout {
   private readonly config: Config;
   private readonly store: Store;
@@ -190,6 +200,26 @@ export class SmartWorkout {
       hasMore: page.hasMore === true,
       requiresFullSnapshot: page.requiresFullSnapshot === true,
     };
+  }
+
+  /** The whole catalogue, read now and never cached: `strava-exercises` compares it with the Strava table. */
+  async catalogue(): Promise<SwCatalogueExercise[]> {
+    const response = await this.request('GET', '/Exercise');
+    if (!response.ok) {
+      throw new SmartWorkoutError(`SmartWorkout /Exercise answered ${response.status}`);
+    }
+    const list: unknown = await response.json();
+
+    return (Array.isArray(list) ? list : []).flatMap((value: unknown): SwCatalogueExercise[] => {
+      const exercise = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+      if (typeof exercise.id !== 'string') {
+        return [];
+      }
+      const translations = typeof exercise.translations === 'object' && exercise.translations !== null ? exercise.translations as Record<string, unknown> : {};
+      const names = [translations.en, ...Object.values(translations)].filter((name): name is string => typeof name === 'string' && name.trim() !== '');
+
+      return [{ id: exercise.id, name: names[0] ?? null, weightType: typeof exercise.weightType === 'string' ? exercise.weightType : null, isPublic: exercise.isPublic === true }];
+    });
   }
 
   /**

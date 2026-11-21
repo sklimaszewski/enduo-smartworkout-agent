@@ -19,6 +19,7 @@ import { runTargets } from './runner.ts';
 import { SmartWorkout } from './smartworkout.ts';
 import { Store } from './store.ts';
 import { Strava } from './strava.ts';
+import { catalogueGaps } from './strava-mapping.ts';
 
 const log = (line: string): void => console.log(`${new Date().toISOString().slice(0, 19)}Z ${line}`);
 
@@ -248,6 +249,22 @@ function health(config: Config, store: Store): number {
   }
 }
 
+/** How the Strava table compares with SmartWorkout's catalogue now; exit 1 when public exercises are missing. */
+async function stravaExercises(config: Config, store: Store): Promise<number> {
+  const gaps = catalogueGaps(await new SmartWorkout(config, store).catalogue());
+  console.log(gaps.missing.length === 0
+    ? 'Every public exercise of SmartWorkout has a Strava type in src/strava-catalogue.ts.'
+    : `${gaps.missing.length} public exercises are not in src/strava-catalogue.ts. Until they are, their names give these types;\ncheck them and add the lines to the table:\n${gaps.missing.map((row) => `  '${row.id}': '${row.type}', // ${row.name}`).join('\n')}`);
+  if (gaps.own.length > 0) {
+    console.log(`\nYour own exercises, matched by name:\n${gaps.own.map((row) => `  ${row.name} → ${row.type}`).join('\n')}`);
+  }
+  if (gaps.stale.length > 0) {
+    console.log(`\n${gaps.stale.length} ids of the table are no longer in the catalogue: ${gaps.stale.join(', ')}`);
+  }
+
+  return gaps.missing.length === 0 ? 0 : 1;
+}
+
 async function main(argv: string[]): Promise<number> {
   const config = loadConfig();
   const store = new Store(config);
@@ -291,8 +308,10 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     case 'health':
       return health(config, store);
+    case 'strava-exercises':
+      return stravaExercises(config, store);
     default:
-      console.log('Commands: run, setup [--smartworkout|--enduo|--strava], once [--dry-run], status, health');
+      console.log('Commands: run, setup [--smartworkout|--enduo|--strava], once [--dry-run], status, strava-exercises, health');
       return command === 'help' ? 0 : 2;
   }
 }

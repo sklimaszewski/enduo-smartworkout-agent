@@ -164,16 +164,26 @@ invented. A workout without a positive duration is skipped because Strava requir
 
 | SmartWorkout information | Strava |
 |---|---|
-| Exercise | Native `exercise_type`, matched against Strava's documented catalogue using its English name, independent of `EXERCISE_LANGUAGE` |
+| Exercise | Native `exercise_type`: from a table of SmartWorkout's whole public catalogue, by exercise id; your own exercises by English name, independent of `EXERCISE_LANGUAGE` |
 | Repetitions, weight in kg | Native `repetitions`, `weight` |
 | Timed set | Native `duration` in seconds (rounded from SmartWorkout's milliseconds) |
 | Workout name | Activity name |
 | Assistance weight | Not sent: it is no lifted weight |
 | Notes, RPE, set types, bands, body weight, timer | Not sent: Strava has no field for them, and the activity gets no description |
 
-Names without a known match use Strava's `TOTAL_BODY_GENERIC`. The activity name is cleaned of invisible/control
-characters. Matching aliases and the supported identifiers live in
-`src/strava-mapping.ts` and `src/strava-exercises.ts`.
+Every public exercise of SmartWorkout's catalogue has its Strava type in `src/strava-catalogue.ts`, by its id: a
+renamed or translated exercise keeps its type. The table was built from the whole catalogue (1163 exercises in
+November 2026): the exact Strava type where Strava has the same movement, else the generic type of its category
+(`ROW_GENERIC`, `CURL_GENERIC`, …). An exercise the table does not have, such as one you added yourself or one
+SmartWorkout added later, is matched by its English name: an exact Strava identifier or alias, else the generic type
+of the movement the name tells (a row is `ROW_GENERIC`, a calf raise `CALF_RAISE_GENERIC`), else
+`TOTAL_BODY_GENERIC`. The activity name is cleaned of invisible/control characters.
+
+`enduo-smartworkout strava-exercises` compares the table with the catalogue as it is now. It prints the public
+exercises the table lacks, as lines to add to it with the type their name gives (check those), your own exercises
+with the type they get, and ids that left the catalogue; it exits with 1 while public exercises are missing. The
+table, the name aliases and the supported identifiers live in `src/strava-catalogue.ts`, `src/strava-mapping.ts`
+and `src/strava-exercises.ts`.
 
 Strava processes uploads asynchronously. The upload id is saved immediately and checked on the next pass,
 without uploading the file again. Each upload's `external_id` is a stable source id plus an attempt of its own:
@@ -184,7 +194,9 @@ independent cursors and retries: a failure of either does not prevent a pass for
 
 An edit of an exported workout updates that activity's **name**. Strava's documented update API cannot replace
 uploaded native sets, start time or duration; those stay as first uploaded. The agent never deletes/recreates
-activities to change them, and never writes a description: one you add on Strava stays.
+activities to change them, and never writes a description: one you add on Strava stays. To replace the sets of
+an exported workout, delete its activity on Strava, then edit the workout in SmartWorkout: the agent uploads it
+again. Deleting an activity on Strava without an edit changes nothing.
 Deleting a workout in SmartWorkout leaves its Strava activity in place. Strava's account visibility settings
 apply to the exported activity.
 
@@ -208,6 +220,7 @@ an activity from another source merely because its time matches; an unrelated du
 | `enduo-smartworkout setup [--smartworkout\|--enduo\|--strava]` | sign in; with a flag, sign in to that one again; the default also connects Strava when enabled |
 | `enduo-smartworkout once [--dry-run]` | one pass now; `--dry-run` prints what would be sent and changes nothing |
 | `enduo-smartworkout status` | sign-ins, sync state and optional Strava export |
+| `enduo-smartworkout strava-exercises` | SmartWorkout exercises without a Strava type in the table, and how your own exercises map |
 | `enduo-smartworkout health` | exit 0 while the service runs (Docker healthcheck) |
 
 Run them with `docker compose exec -it smartworkout enduo-smartworkout <command>`.

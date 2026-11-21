@@ -4,6 +4,8 @@
 import { sha256 } from './identity.ts';
 import { byOrder, MAX_TITLE } from './mapping.ts';
 import type { Catalogue, SwWorkout } from './mapping.ts';
+import type { SwCatalogueExercise } from './smartworkout.ts';
+import { STRAVA_EXERCISE_BY_ID } from './strava-catalogue.ts';
 import { STRAVA_EXERCISES } from './strava-exercises.ts';
 import { line } from './text.ts';
 
@@ -87,9 +89,49 @@ const ALIASES: Record<string, string> = {
   WIDE_GRIP_LAT_PULLDOWN: 'LAT_PULLDOWN', DUMBBELL_BENT_OVER_ROW: 'BENT_OVER_DUMBBELL_ROW',
   MACHINE_REVERSE_FLY: 'MACHINE_REAR_DELT_REVERSE_FLY', MACHINE_REVERSE_FLYES: 'MACHINE_REAR_DELT_REVERSE_FLY',
   DUMBBELL_BULGARIAN_SQUAT: 'DUMBBELL_BULGARIAN_SPLIT_SQUATS', DUMBBELL_BULGARIAN_SPLIT_SQUAT: 'DUMBBELL_BULGARIAN_SPLIT_SQUATS',
+  ONE_ARM_CABLE_LATERAL_RAISE: 'CABLE_LATERAL_RAISE', SINGLE_ARM_CABLE_LATERAL_RAISE: 'CABLE_LATERAL_RAISE',
+  ROPE_TRICEPS_PUSHDOWN: 'CABLE_TRICEPS_PUSHDOWN', ROPE_TRICEP_PUSHDOWN: 'CABLE_TRICEPS_PUSHDOWN',
+  KNEELING_CABLE_ABS_CRUNCHES: 'CABLE_CRUNCH', KNEELING_CABLE_CRUNCH: 'CABLE_CRUNCH', CABLE_CRUNCHES: 'CABLE_CRUNCH',
+  DUMBBELL_NEUTRAL_GRIP_INCLINE_BENCH_ROW: 'CHEST_SUPPORTED_ROW', INCLINE_DUMBBELL_ROW: 'CHEST_SUPPORTED_ROW',
+  ONE_ARM_CABLE_ROW: 'SEATED_CABLE_ROW', SINGLE_ARM_CABLE_ROW: 'SEATED_CABLE_ROW', CABLE_FACE_PULL: 'FACE_PULL',
+  SMITH_CALF_RAISES: 'STANDING_CALF_RAISE', SMITH_MACHINE_CALF_RAISE: 'STANDING_CALF_RAISE',
+  CLOSE_GRIP_BENCH_PRESS: 'CLOSE_GRIP_BARBELL_BENCH_PRESS', PLATE_LOADED_CHEST_PRESS: 'MACHINE_CHEST_PRESS',
+  SEATED_ARNOLD_DUMBBELL_PRESS: 'ARNOLD_PRESS', DUMBBELL_ARNOLD_PRESS: 'ARNOLD_PRESS',
+  HANGING_STRAIGHT_LEG_RAISE: 'HANGING_LEG_RAISE',
 };
 
-/** Do not guess at a custom exercise's movement. Its original name stays in the description. */
+/** Words of a name that tell its movement: the first that matches gives Strava's generic type of that movement. */
+const MOVEMENTS: Array<[RegExp, string]> = ([
+  ['LEG_CURLS?', 'LEG_CURL_GENERIC'],
+  ['CALF|CALVES', 'CALF_RAISE_GENERIC'],
+  ['LATERAL_RAISES?|SIDE_RAISES?', 'LATERAL_RAISE_GENERIC'],
+  ['(?:LEG|KNEE)_RAISES?|TOES_TO_BAR', 'LEG_RAISE_GENERIC'],
+  ['TRICEPS?|PUSHDOWNS?|PRESSDOWNS?|SKULL_?CRUSHERS?|DIPS?', 'TRICEPS_EXTENSION_GENERIC'],
+  ['CRUNCH(?:ES)?', 'CRUNCH'],
+  ['SIT_?UPS?', 'SIT_UP_GENERIC'],
+  ['FACE_PULLS?', 'FACE_PULL'],
+  ['(?:LAT_)?PULL_?DOWNS?', 'LAT_PULLDOWN'],
+  ['PULL_?UPS?|CHIN_?UPS?', 'PULL_UP_GENERIC'],
+  ['ROWS?', 'ROW_GENERIC'],
+  ['FL(?:Y|YE|YES|IES)', 'FLYE_GENERIC'],
+  ['DEADLIFTS?|RDL', 'DEADLIFT_GENERIC'],
+  ['LUNGES?', 'LUNGE_GENERIC'],
+  ['SQUATS?|LEG_PRESS', 'SQUAT_GENERIC'],
+  ['(?:BENCH|CHEST)_PRESS', 'BENCH_PRESS_GENERIC'],
+  ['(?:SHOULDER|OVERHEAD|MILITARY|ARNOLD)_PRESS', 'SHOULDER_PRESS_GENERIC'],
+  ['PUSH_?UPS?', 'PUSH_UP_GENERIC'],
+  ['PLANKS?', 'PLANK_GENERIC'],
+  ['SHRUGS?', 'SHRUG_GENERIC'],
+  ['HIP_THRUSTS?|GLUTE_BRIDGES?', 'HIP_RAISE_GENERIC'],
+  ['HYPEREXTENSIONS?|BACK_EXTENSIONS?', 'HYPEREXTENSION_GENERIC'],
+  ['CARRY|CARRIES|FARMERS?_WALKS?', 'CARRY_GENERIC'],
+  ['CURLS?', 'CURL_GENERIC'],
+] as Array<[string, string]>).map(([words, type]) => [new RegExp(`(?:^|_)(?:${words})(?:_|$)`), type]);
+
+/**
+ * An exact identifier, else an alias, else the generic type of the movement its name tells (a row is ROW_GENERIC),
+ * else TOTAL_BODY_GENERIC. Never a specific exercise that the name does not say.
+ */
 export function stravaExercise(name: string | undefined, weightType?: string): string {
   if (name === undefined) {
     return 'TOTAL_BODY_GENERIC';
@@ -111,7 +153,39 @@ export function stravaExercise(name: string | undefined, weightType?: string): s
     }
   }
 
-  return 'TOTAL_BODY_GENERIC';
+  return MOVEMENTS.find(([words]) => words.test(key))?.[1] ?? 'TOTAL_BODY_GENERIC';
+}
+
+/** The type from the table of SmartWorkout's catalogue, else the type its name gives (an athlete's own exercise). */
+export function stravaExerciseOf(exerciseId: string, name: string | undefined, weightType?: string): string {
+  return Object.hasOwn(STRAVA_EXERCISE_BY_ID, exerciseId) ? STRAVA_EXERCISE_BY_ID[exerciseId]! : stravaExercise(name, weightType);
+}
+
+export interface CatalogueGaps {
+  /** Public exercises the table lacks, with the type their name gives. */
+  missing: Array<{ id: string; name: string; type: string }>;
+  /** Exercises athletes added for themselves: always matched by name. */
+  own: Array<{ id: string; name: string; type: string }>;
+  /** Ids in the table that the catalogue no longer has. */
+  stale: string[];
+}
+
+/** What `strava-exercises` reports: how the table of SmartWorkout's catalogue compares with the catalogue now. */
+export function catalogueGaps(catalogue: SwCatalogueExercise[]): CatalogueGaps {
+  const gaps: CatalogueGaps = { missing: [], own: [], stale: [] };
+  const ids = new Set<string>();
+  for (const exercise of catalogue) {
+    ids.add(exercise.id);
+    const row = { id: exercise.id, name: exercise.name ?? exercise.id, type: stravaExercise(exercise.name ?? undefined, exercise.weightType ?? undefined) };
+    if (!exercise.isPublic) {
+      gaps.own.push(row);
+    } else if (!Object.hasOwn(STRAVA_EXERCISE_BY_ID, exercise.id)) {
+      gaps.missing.push(row);
+    }
+  }
+  gaps.stale = Object.keys(STRAVA_EXERCISE_BY_ID).filter((id) => !ids.has(id));
+
+  return gaps;
 }
 
 /** Null for an empty/aborted workout. A missing duration is refused rather than invented. */
@@ -119,7 +193,7 @@ export function toStravaActivity(workout: SwWorkout, catalogue: Catalogue, timez
   const sets: StravaSet[] = [];
   for (const exercise of byOrder(workout.workoutExercises ?? [])) {
     const units = Array.isArray(exercise.units) ? exercise.units : [];
-    const exerciseType = stravaExercise(catalogue.englishNames?.[exercise.exerciseId] ?? catalogue.names[exercise.exerciseId], catalogue.weightTypes[exercise.exerciseId]);
+    const exerciseType = stravaExerciseOf(exercise.exerciseId, catalogue.englishNames?.[exercise.exerciseId] ?? catalogue.names[exercise.exerciseId], catalogue.weightTypes[exercise.exerciseId]);
     for (const set of byOrder(exercise.sets ?? [])) {
       if (!finite(set.reps) || set.reps <= 0) {
         continue;

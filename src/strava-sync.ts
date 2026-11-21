@@ -9,7 +9,7 @@ import { catalogueIn, problemWith, unknownExercises } from './mapping.ts';
 import type { SwWorkout } from './mapping.ts';
 import { SmartWorkoutError } from './smartworkout.ts';
 import type { Store } from './store.ts';
-import { StravaActivityError } from './strava.ts';
+import { StravaActivityError, StravaActivityGoneError } from './strava.ts';
 import type { StravaUpload } from './strava.ts';
 import { StravaMappingError, stravaMarker, toStravaActivity } from './strava-mapping.ts';
 import type { StravaActivity } from './strava-mapping.ts';
@@ -234,9 +234,20 @@ export async function runStravaPass(config: Config, store: Store, smartworkout: 
           // A completed upload may belong to a revision before an edit that arrived while it was processing.
           await strava.updateActivity(activityId, activity);
         } else {
-          state.activities[id] = activityId;
-          save();
-          await strava.updateActivity(activityId, activity);
+          try {
+            await strava.updateActivity(activityId, activity);
+          } catch (error) {
+            if (!(error instanceof StravaActivityGoneError)) {
+              throw error;
+            }
+            // Deleted on Strava, then edited in SmartWorkout: the edit asks for the activity again. The next
+            // pass uploads it (with an external id of its own: Strava refuses the one of the deleted activity).
+            delete state.activities[id];
+            save();
+            log(`Strava: the activity of workout ${line(id, 80)} was deleted on Strava; the next pass uploads the workout again.`);
+            result.pending++;
+            return result;
+          }
         }
         state.revisions[id] = revision;
         delete state.pending[id];

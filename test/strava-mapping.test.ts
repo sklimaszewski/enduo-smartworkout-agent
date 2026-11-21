@@ -66,8 +66,32 @@ describe('Strava JSON strength mapping', () => {
     assert.equal(stravaExercise('Dumbbell Bent Over Row'), 'BENT_OVER_DUMBBELL_ROW');
     assert.equal(stravaExercise('Machine Reverse Flyes'), 'MACHINE_REAR_DELT_REVERSE_FLY');
     assert.equal(stravaExercise('Dumbbell Bulgarian Squat'), 'DUMBBELL_BULGARIAN_SPLIT_SQUATS');
+    for (const [name, code] of [
+      ['One-Arm Cable Lateral Raise', 'CABLE_LATERAL_RAISE'], ['Rope Triceps Pushdown', 'CABLE_TRICEPS_PUSHDOWN'],
+      ['Kneeling Cable Abs Crunches', 'CABLE_CRUNCH'], ['Dumbbell Neutral Grip Incline Bench Row', 'CHEST_SUPPORTED_ROW'],
+      ['One-Arm Cable Row', 'SEATED_CABLE_ROW'], ['Cable Face Pull', 'FACE_PULL'], ['Smith Calf Raises', 'STANDING_CALF_RAISE'],
+      ['Close Grip Bench Press', 'CLOSE_GRIP_BARBELL_BENCH_PRESS'], ['Plate-Loaded Chest Press', 'MACHINE_CHEST_PRESS'],
+      ['Seated Arnold Dumbbell Press', 'ARNOLD_PRESS'], ['Hanging Straight Leg Raise', 'HANGING_LEG_RAISE'],
+    ]) {
+      assert.equal(stravaExercise(name), code, name);
+    }
     assert.equal(stravaExercise('Something I invented'), 'TOTAL_BODY_GENERIC');
     assert.equal(stravaExercise(undefined), 'TOTAL_BODY_GENERIC');
+  });
+
+  it('falls back to the generic type of the movement a name tells, and only then to the whole body', () => {
+    for (const [name, code] of [
+      ['Landmine Meadows Row Variation', 'ROW_GENERIC'], ['Single Leg Machine Calf Press Thing', 'CALF_RAISE_GENERIC'],
+      ['Cable Y Lateral Raises', 'LATERAL_RAISE_GENERIC'], ['Weighted Triceps Dips on Bench', 'TRICEPS_EXTENSION_GENERIC'],
+      ['Seated Leg Curls Single', 'LEG_CURL_GENERIC'], ['Spider Curls', 'CURL_GENERIC'], ['Pec Deck Flyes', 'FLYE_GENERIC'],
+      ['Wide Neutral Pull-Downs', 'LAT_PULLDOWN'], ['Weighted Chin-Ups', 'PULL_UP_GENERIC'], ['Captain Chair Knee Raises', 'LEG_RAISE_GENERIC'],
+      ['Hack Machine Squats', 'SQUAT_GENERIC'], ['Incline Smith Bench Press', 'BENCH_PRESS_GENERIC'], ['Banded Shrugs', 'SHRUG_GENERIC'],
+      ['Rowing Erg', 'TOTAL_BODY_GENERIC'], ['Curling Stone Throw', 'TOTAL_BODY_GENERIC'],
+    ]) {
+      const type = stravaExercise(name);
+      assert.equal(type, code, name);
+      assert.ok(STRAVA_EXERCISES.has(type), type);
+    }
   });
 
   it('preserves source values without Enduo caps and omits invalid or incomplete sets', () => {

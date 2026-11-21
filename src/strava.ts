@@ -16,6 +16,8 @@ export class StravaError extends Error {}
 export class StravaAuthError extends StravaError {}
 /** A refusal of one activity, rather than a connection/authentication/rate-limit failure. */
 export class StravaActivityError extends StravaError {}
+/** The activity to update is no longer on Strava: the athlete deleted it there. */
+export class StravaActivityGoneError extends StravaActivityError {}
 /** Strava's rate limit is used up: nothing is sent to Strava until `until` (ms since the epoch). */
 export class StravaRateLimitError extends StravaError {
   readonly until: number;
@@ -252,6 +254,9 @@ export class Strava {
       throw new StravaAuthError(`Strava refused access (${response.status}): approve activity:read_all and activity:write with \`enduo-smartworkout setup --strava\`.`);
     }
     if (!response.ok) {
+      if (method === 'PUT' && response.status === 404) {
+        throw new StravaActivityGoneError('The activity is no longer on Strava.');
+      }
       if (method !== 'GET' && [400, 404, 422].includes(response.status)) {
         throw new StravaActivityError(`Strava refused this activity (${response.status}).`);
       }

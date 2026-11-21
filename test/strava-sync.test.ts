@@ -11,7 +11,7 @@ import type { SwWorkout } from '../src/mapping.ts';
 import { runTargets } from '../src/runner.ts';
 import type { SwChange, SwSyncPage } from '../src/smartworkout.ts';
 import { Store } from '../src/store.ts';
-import { Strava, StravaActivityError, StravaAuthError, StravaError } from '../src/strava.ts';
+import { Strava, StravaActivityError, StravaActivityGoneError, StravaAuthError, StravaError } from '../src/strava.ts';
 import type { StravaUpload } from '../src/strava.ts';
 import { stravaMarker } from '../src/strava-mapping.ts';
 import type { StravaActivity } from '../src/strava-mapping.ts';
@@ -72,7 +72,11 @@ class Destination implements StravaActivities {
     this.polls.push(id);
     return this.uploadResult ?? { id, activityId: this.processing ? null : id.replace('upload-', ''), failed: false, duplicate: false, error: null };
   }
-  async updateActivity(id: string): Promise<void> { this.updates.push(id); }
+  gone = new Set<string>();
+  async updateActivity(id: string): Promise<void> {
+    if (this.gone.has(id)) { throw new StravaActivityGoneError('The activity is no longer on Strava.'); }
+    this.updates.push(id);
+  }
 }
 
 describe('Strava sync', () => {
@@ -169,6 +173,24 @@ describe('Strava sync', () => {
     assert.equal(target.creates.length, 0);
     assert.deepEqual(target.updates, ['77']);
     assert.equal(state().activities.old, '77');
+  });
+
+  it('uploads an edited workout again when its activity was deleted on Strava', async () => {
+    await pass();
+    source.add('w');
+    assert.equal((await pass()).sent, 1);
+    assert.equal(state().activities.w, '1');
+
+    // Deleting on Strava alone asks for nothing; the edit that follows asks for the activity again.
+    target.gone.add('1');
+    source.add('w', 2, { name: 'Edited' });
+    assert.equal((await pass()).pending, 1);
+    assert.equal(state().activities.w, undefined);
+    assert.equal((await pass()).sent, 1);
+    assert.equal(target.creates.length, 2);
+    assert.equal(target.creates[1]?.activity.name, 'Edited');
+    assert.equal(state().activities.w, '2');
+    assert.equal(state().revisions.w, 2);
   });
 
   it('sends a workout added after the history was read even when it is dated before the boundary', async () => {
